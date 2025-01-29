@@ -1,0 +1,169 @@
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from ultralytics import YOLO
+from PIL import Image
+from io import BytesIO
+import os
+from pymongo import MongoClient
+import gridfs
+import uvicorn
+import numpy as np
+from urllib.parse import quote_plus  # For URL encoding passwords
+import uuid  # For generating unique identifiers
+
+# Initialize the FastAPI app
+app = FastAPI()
+
+# CORS configuration
+origins = [
+    "http://localhost",
+    "http://localhost:3000",
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# MongoDB configuration
+MONGO_USERNAME = "nikhilnaga1234"
+MONGO_PASSWORD = "Mongodbnew@"  # Original password
+encoded_password = quote_plus(MONGO_PASSWORD)  # URL-encode password
+MONGO_URI = f"mongodb+srv://{MONGO_USERNAME}:{encoded_password}@cluster0.hvrs8.mongodb.net/?retryWrites=true&w=majority"
+
+try:
+    client = MongoClient(MONGO_URI)
+    db = client["image_storage"]  # Database name
+    fs = gridfs.GridFS(db)
+    print("Connected to MongoDB Atlas successfully.")
+except Exception as e:
+    print(f"Error connecting to MongoDB: {e}")
+    raise e
+
+# Load YOLOv8 model
+MODEL_PATH = "./models/best.pt"
+if not os.path.exists(MODEL_PATH):
+    raise FileNotFoundError(f"Model not found at {MODEL_PATH}")
+MODEL = YOLO(MODEL_PATH)
+
+# Class names from the model
+CLASS_NAMES = [
+    'Bacterial',
+    'Downy mildew',
+    'Healthy',
+    'Powdery mildew',
+    'Septoria Blight',
+    'Virus',
+    'Wilt - Leaf Blight'
+]
+
+@app.get("/ping")
+async def ping():
+    """Health check endpoint."""
+    return {"message": "Hello, I am alive"}
+
+def read_file_as_image(data: bytes) -> Image.Image:
+    """Reads the uploaded file as an image."""
+    try:
+        return Image.open(BytesIO(data))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Invalid image file.")
+
+@app.post("/predict")
+async def predict(file: UploadFile = File(...)):
+    # Log the file details
+    print(f"Received file: {file.filename}, Content-Type: {file.content_type}")
+
+    # Validate file MIME type
+    if file.content_type not in ["image/jpeg", "image/png"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file format. Only JPG, JPEG, and PNG are allowed."
+        )
+
+    try:
+        # Read file data
+        input_data = await file.read()
+
+        # Store input image in MongoDB GridFS
+        input_image_id = fs.put(
+            input_data,
+            filename=file.filename,
+            content_type=file.content_type,
+            metadata={"type": "input"}
+        )
+        print(f"Input image stored with ID: {input_image_id}")
+
+        # Load the image into a NumPy array (YOLOv8 compatible)
+        image = Image.open(BytesIO(input_data)).convert("RGB")  # Ensure RGB format
+        image_np = np.array(image)
+
+        # Run inference with YOLOv8
+        results = MODEL.predict(source=image_np, conf=0.25)
+
+        # Generate the output image with bounding boxes
+        output_image = results[0].plot()  # Draws bounding boxes on the image
+        output_image_pil = Image.fromarray(output_image)
+
+        # Save output image to a BytesIO object
+        output_buffer = BytesIO()
+        output_image_pil.save(output_buffer, format="JPEG")
+        output_buffer.seek(0)
+        output_data = output_buffer.read()
+
+        # Store output image in MongoDB GridFS
+        output_image_id = fs.put(
+            output_data,
+            filename=f"output_{file.filename}",
+            content_type="image/jpeg",
+            metadata={"type": "output"}
+        )
+        print(f"Output image stored with ID: {output_image_id}")
+
+        # Extract detections
+        detections = []
+        for result in results:
+            for box in result.boxes:
+                label = CLASS_NAMES[int(box.cls.item())]
+                confidence = float(box.conf.item())
+                detections.append({"label": label, "confidence": confidence})
+
+        # Construct URLs for images
+        base_url = "http://localhost:8000"  # Adjust if deployed differently
+        input_image_url = f"{base_url}/images/{input_image_id}"
+        output_image_url = f"{base_url}/images/{output_image_id}"
+
+        # Return the detections and image URLs
+        return {
+            "detections": detections,
+            "input_image_url": input_image_url,
+            "output_image_url": output_image_url
+        }
+
+    except HTTPException as he:
+        raise he  # Re-raise HTTP exceptions
+    except Exception as e:
+        print(f"Error during prediction: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@app.get("/images/{image_id}")
+async def get_image(image_id: str):
+    """Retrieve an image from MongoDB GridFS."""
+    try:
+        file_obj = fs.get(image_id)
+        return FileResponse(
+            path=BytesIO(file_obj.read()),
+            media_type=file_obj.content_type,
+            filename=file_obj.filename
+        )
+    except gridfs.errors.NoFile:
+        raise HTTPException(status_code=404, detail="Image not found")
+    except Exception as e:
+        print(f"Error retrieving image: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
