@@ -9,7 +9,7 @@ import os
 app = FastAPI()
 
 # CORS configuration
-origins = ["http://localhost", "http://localhost:3000"]
+origins = ["http://localhost", "http://localhost:3000","https://cypro-2.onrender.com"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -19,7 +19,7 @@ app.add_middleware(
 )
 
 # Load YOLOv8 model
-MODEL_PATH = r"./models/best.pt"
+MODEL_PATH = r"C:\Users\prudh\OneDrive\Desktop\dd1\models\best.pt"
 if not os.path.exists(MODEL_PATH):
     raise FileNotFoundError(f"Model not found at {MODEL_PATH}")
 MODEL = YOLO(MODEL_PATH)
