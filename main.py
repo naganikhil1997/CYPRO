@@ -19,6 +19,7 @@ app.add_middleware(
 )
 
 # Load YOLOv8 model
+# C:\Users\prudh\OneDrive\Desktop\dd1\models\best.pt
 MODEL_PATH = r".\models\best.pt"
 if not os.path.exists(MODEL_PATH):
     raise FileNotFoundError(f"Model not found at {MODEL_PATH}")
