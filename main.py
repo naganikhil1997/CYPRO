@@ -4,6 +4,7 @@ from ultralytics import YOLO
 from PIL import Image, ImageDraw, ImageFont
 import io
 import os
+import uvicorn
 
 # Initialize FastAPI app
 app = FastAPI()
